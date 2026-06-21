@@ -1,0 +1,20 @@
+services:
+  rec-bot:
+    build: .
+    image: rec-bot:latest
+    container_name: rec-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    # Chromium is happier with more shared memory even with --disable-dev-shm-usage.
+    shm_size: "1gb"
+    volumes:
+      # Recordings, the persistent Chrome login profile, logs, and schedule.json
+      # all live here so they survive container restarts.
+      - ./data:/data
+      # Mount your rclone config if you upload to Google Drive (UPLOAD_TARGET=drive).
+      # - ./rclone.conf:/home/pwuser/.config/rclone/rclone.conf:ro
+    # Override to ["serve"] for API-only, or ["schedule"] for scheduler-only.
+    command: ["all"]

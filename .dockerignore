@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+*.log
+.git
+.env
+# the reference material / saved claude.ai conversation
+*.html
+*_files/
+npm-debug.log*

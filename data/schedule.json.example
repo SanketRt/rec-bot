@@ -1,0 +1,15 @@
+[
+  {
+    "title": "Algorithms Lecture 3 — Segment Trees",
+    "meetUrl": "https://meet.google.com/abc-defg-hij",
+    "startsAt": "2026-06-21T18:00:00+05:30",
+    "endsAt": "2026-06-21T20:00:00+05:30"
+  },
+  {
+    "title": "CP Practice Session",
+    "meetUrl": "klm-nopq-rst",
+    "startsAt": "2026-06-23T19:00:00+05:30",
+    "endsAt": "2026-06-23T21:00:00+05:30",
+    "enabled": false
+  }
+]

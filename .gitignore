@@ -1,0 +1,11 @@
+node_modules/
+dist/
+# data/ holds the signed-in Chrome profile (login cookies!), recordings, logs —
+# never commit it. Keep only the schedule example.
+data/*
+!data/schedule.json.example
+.env
+*.log
+# reference material (saved claude.ai conversation)
+*.html
+*_files/
