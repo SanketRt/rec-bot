@@ -1,7 +1,23 @@
+import path from "node:path";
+import { rm } from "node:fs/promises";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import type { Config } from "../config.js";
 import type { Logger } from "../logger.js";
 import { ensureDir } from "../util.js";
+
+/**
+ * Chrome leaves these lock files in the profile if a previous run was killed
+ * uncleanly (e.g. a hard `docker kill`), which then blocks the next launch with
+ * "the profile appears to be in use". Only one bot ever uses this profile at a
+ * time, so clearing stale locks on startup is safe and avoids a wedged bot.
+ */
+async function clearStaleProfileLocks(userDataDir: string, log: Logger): Promise<void> {
+  for (const f of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+    await rm(path.join(userDataDir, f), { force: true }).catch((err) =>
+      log.debug({ err, f }, "could not remove stale lock (continuing)"),
+    );
+  }
+}
 
 export interface BrowserHandle {
   context: BrowserContext;
@@ -22,6 +38,7 @@ export interface BrowserHandle {
  */
 export async function launchBrowser(cfg: Config, log: Logger): Promise<BrowserHandle> {
   await ensureDir(cfg.chromeUserDataDir!);
+  await clearStaleProfileLocks(cfg.chromeUserDataDir!, log);
 
   const { screenWidth: w, screenHeight: h } = cfg;
 

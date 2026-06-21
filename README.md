@@ -1,234 +1,208 @@
 # rec-bot
 
-A self-hosted bot that joins Google Meet lectures, records them at full quality,
-and (optionally) uploads the result — built for ANCC's Algorithms & Competitive
-Programming sessions so a recording never depends on someone remembering to hit
-"record" or on a noisy room mic.
+A recording bot for online lectures. You give it a Google Meet link (or a
+schedule of them); it joins the call, records the whole thing in clean quality,
+and saves the video — so a lecture recording never depends on someone remembering
+to hit "record" or on a noisy room microphone.
 
-## Why a bot fixes the real problem
+Built for ANCC's Algorithms & Competitive Programming sessions.
 
-Every recurring failure — missed audio, room noise, low quality — comes from
-capturing a **microphone in a room**. This bot captures the **digital Meet
-stream** instead: each speaker's mic and the exact pixels of the shared screen.
-Result: zero room noise, nothing to forget, consistent quality every time.
+> Want to know how it works under the hood? See **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
-## How it works
+---
 
-```
-        ┌─────────────────────── Docker container ───────────────────────┐
-        │                                                                 │
- Meet → │  Chromium (headed, in Xvfb)  →  PulseAudio null sink            │
- link   │        ▲ Playwright joins              │ .monitor (clean mix)   │
-        │        │                               ▼                        │
-        │   join/monitor logic           ffmpeg  (x11grab + pulse)        │
-        │        │                               │                        │
-        │   scheduler / API ─────────────────────┘→ .mkv → finalize .mp4  │
-        │                                              → loudnorm/trim     │
-        │                                              → upload (Drive/YT) │
-        └─────────────────────────────────────────────────────────────────┘
-```
+## Why use it
 
-- **Headed Chromium in a virtual display (Xvfb).** Fully headless Chromium is
-  fingerprinted and blocked by Meet; a real headed browser on a virtual display
-  is indistinguishable from a desktop.
-- **PulseAudio null sink.** Meet plays remote audio into a virtual sink; we
-  record its *monitor*, i.e. the mixed digital output. No microphone, no room
-  noise.
-- **ffmpeg** captures the display + the sink monitor into a crash-resilient
-  `.mkv`, then post-processing remuxes to a streamable `.mp4`.
-- **Resilient selectors.** All Meet UI lookups live in one file
-  (`src/bot/selectors.ts`) with multiple fallback strategies, so a Meet UI
-  change is usually a one-line fix.
+Recordings made by a person in a room keep going wrong — audio not captured,
+background noise, low quality. This bot fixes that by recording the **call
+itself** instead of a room: it hears exactly what each speaker's microphone
+sends and sees exactly what's shared on screen. No room noise, nothing to
+forget, the same quality every time.
 
-## What makes it solid
+## What you need
 
-- **Crash-resilient capture** — records to Matroska (recoverable even if killed),
-  finalizes to `+faststart` MP4 only at the end.
-- **Graceful shutdown** — SIGTERM/Ctrl-C and the auto-leave path always finalize
-  a playable file (clean ffmpeg `q`, escalating to signals only if needed).
-- **Auto start & stop** — joins from a schedule, leaves when the room empties
-  (with a startup grace period for a late lecturer) and on a hard duration cap.
-- **Loudness-normalized audio** (EBU R128) and optional silence trimming.
-- **Three ways to drive it** — one-shot CLI, HTTP API, or calendar/file scheduler.
-- **Pluggable upload** — local, Google Drive (rclone, resumable), or YouTube.
-- **Debuggable** — structured logs + a screenshot saved on any join failure.
+- A computer or small server that can stay on during lectures (your own machine,
+  or a cheap/free cloud VM — see [Running it on a server](#running-it-on-a-server)).
+- **Docker** installed.
+- A **dedicated Google account** for the bot (e.g. `ancc-recorder@…`). Don't use a
+  personal account you also attend meetings with — the bot needs to be a separate
+  participant.
 
-## Quick start (Docker)
+## Set it up (one time)
+
+**1. Get the code**
 
 ```bash
-cd ~/Documents/ANCC/rec-bot
-cp .env.example .env            # edit as needed
-mkdir -p data
-docker compose build
-docker compose up -d            # runs scheduler + control API (port 8080)
+git clone git@github.com:SanketRt/rec-bot.git
+cd rec-bot
 ```
 
-### One-off recording (no scheduler)
+**2. Create your settings file**
 
 ```bash
-# inside the running container:
-docker compose exec rec-bot node dist/cli.js record https://meet.google.com/abc-defg-hij --title "Algo Lec 3"
-
-# or via the API:
-curl -X POST localhost:8080/record \
-  -H 'content-type: application/json' \
-  -d '{"meetUrl":"https://meet.google.com/abc-defg-hij","title":"Algo Lec 3"}'
+cp .env.example .env
 ```
 
-Recordings land in `./data/recordings/`.
+Open `.env` and set a couple of things (everything else has good defaults):
 
-### First-run: sign the bot in once
+- `BROWSER_CHANNEL=chrome` — leave this on.
+- Where recordings should go later — `UPLOAD_TARGET` (`local` keeps them on disk;
+  `drive` or `youtube` upload them — see [Saving recordings](#saving-recordings)).
 
-Give the bot a **dedicated Google account** (e.g. `ancc-recorder@…`). If it's an
-IITD-org account, org meetings usually admit it without a manual "ask to join".
-The login is stored in the persistent profile under `data/chrome-profile/`, so
-you only do this once:
+**3. Sign the bot in (once)**
 
-```bash
-# Run a headed Chromium against the container's display to log in interactively,
-# OR log in on any machine and copy the resulting profile dir into data/chrome-profile.
-```
-
-See [docs: signing in](#signing-the-bot-in) below for the detailed options.
-
-## Running modes
-
-| Command  | What it does                                  |
-|----------|-----------------------------------------------|
-| `record <url>` | Record one meeting now, then exit (great for testing). |
-| `serve`  | Run the HTTP control API only.                |
-| `schedule` | Run the scheduler only.                     |
-| `all`    | Scheduler **and** API together (default).     |
-
-Local dev (without Docker, needs `Xvfb`, `pulseaudio`, `ffmpeg` on the host):
+The bot stays logged into its Google account so it can join meetings. Sign in one
+time on a computer with a screen:
 
 ```bash
 npm install
-npx playwright install chromium
-npm run build
-xvfb-run -s "-screen 0 1920x1080x24" node dist/cli.js record <url>
+node scripts/signin.mjs        # a Chrome window opens — log in as the bot account
 ```
 
-## Scheduling
+A Chrome window opens; log in with the **bot's** Google account and close it when
+done. The login is saved and reused from then on.
 
-### File-based (default, simplest)
+> If your lectures are IIT Delhi org meetings, sign in with an **IITD account** —
+> org meetings usually let the bot in automatically, with no one having to admit it.
 
-Set `SCHEDULE_SOURCE=file` and drop a `data/schedule.json`
-(see `data/schedule.json.example`):
+**4. Build and start it**
+
+```bash
+docker compose up -d --build
+```
+
+That's it — the bot is now running and watching your schedule.
+
+## Recording lectures
+
+You have three ways to use it. Pick whichever fits.
+
+### A. Tell it your schedule (recommended)
+
+Create a file `data/schedule.json` listing your lectures (copy the example):
+
+```bash
+cp data/schedule.json.example data/schedule.json
+```
 
 ```json
 [
-  { "title": "Algorithms Lecture 3",
+  {
+    "title": "Algorithms Lecture 3",
     "meetUrl": "https://meet.google.com/abc-defg-hij",
     "startsAt": "2026-06-21T18:00:00+05:30",
-    "endsAt":   "2026-06-21T20:00:00+05:30" }
+    "endsAt":   "2026-06-21T20:00:00+05:30"
+  }
 ]
 ```
 
-The file is re-read every poll, so edits apply without a restart. The bot joins
-`GCAL_LOOKAHEAD_MIN` minutes before `startsAt` and uses `endsAt` to set a max
-duration.
+The bot joins a couple of minutes before each lecture, records it, and leaves
+when it ends. You can edit this file anytime — no restart needed.
 
-### Google Calendar (fully hands-off)
+### B. Use a Google Calendar
 
-Set `SCHEDULE_SOURCE=gcal`, point `GCAL_CALENDAR_ID` at the calendar that holds
-your lecture schedule, and provide a Google refresh token (below). Any event
-with a Meet link is recorded automatically.
+If your lectures live on a calendar, point the bot at it and it records every
+event that has a Meet link automatically. See
+[Connecting a calendar](#connecting-a-google-calendar).
 
-## Upload targets
-
-Set `UPLOAD_TARGET` to one of:
-
-- `local` (default) — keep the file in `data/recordings/`.
-- `drive` — upload via **rclone**. Configure a remote (`rclone config`) and set
-  `RCLONE_REMOTE=gdrive:ANCC/recordings`; mount your `rclone.conf` (see the
-  commented volume in `docker-compose.yml`). Best choice for large/flaky uploads.
-- `youtube` — upload as an unlisted video. Needs an OAuth refresh token.
-
-### Getting a Google refresh token (YouTube upload + Calendar)
+### C. Record one meeting right now
 
 ```bash
-# Create a "Desktop app" OAuth client in Google Cloud Console and enable
-# "YouTube Data API v3" and/or "Google Calendar API", then:
-GOOGLE_CLIENT_ID=xxx GOOGLE_CLIENT_SECRET=yyy node scripts/google-auth.mjs
-# open the printed URL, authorize, and copy GOOGLE_REFRESH_TOKEN into .env
+docker compose exec rec-bot node dist/cli.js record https://meet.google.com/abc-defg-hij --title "Algo Lec 3"
 ```
 
-## Signing the bot in
+Either way, **if the meeting isn't an org meeting, someone already in the call has
+to click "Admit"** when the bot ("ANCC Recording") knocks.
 
-The bot reuses a persistent Chromium profile (`CHROME_USER_DATA_DIR`,
-default `data/chrome-profile`). Scripting Google's password form trips its
-automation defenses, so log in interactively **once** and reuse the profile:
+## Where recordings go
 
-- **Easiest:** on your laptop, `npx playwright launch` a Chromium with
-  `--user-data-dir=$(pwd)/data/chrome-profile`, sign into the recorder account,
-  close it, then ship that `data/` dir to the server.
-- **On the server:** temporarily expose the container's display (e.g. start a
-  VNC server against `:99`) and log in once.
+Finished videos land in the `data/recordings/` folder as `.mp4` files, named with
+the date and lecture title. They're normal video files — open them in any player.
 
-Org-account bots in org meetings often skip the lobby entirely — worth setting up.
+## Saving recordings
 
-## Deploying on Oracle Cloud Always Free
+By default recordings stay on the machine. To upload them automatically, set
+`UPLOAD_TARGET` in `.env`:
 
-Oracle's Always Free **Ampere A1** (up to 4 ARM cores / 24 GB RAM, free forever)
-runs this comfortably — the image is arm64-compatible.
+- **`drive`** — upload to Google Drive. Set `RCLONE_REMOTE` and provide an rclone
+  config (see comments in `docker-compose.yml`). Best for large lectures.
+- **`youtube`** — upload as an unlisted YouTube video. Run the one-time helper
+  `node scripts/google-auth.mjs` to connect a YouTube account.
+
+Set `DELETE_AFTER_UPLOAD=true` if you want the local copy removed after a
+successful upload.
+
+## Everyday commands
 
 ```bash
-# on the instance:
+docker compose up -d            # start (or restart) the bot
+docker compose down             # stop it
+docker compose logs -f          # watch what it's doing
+curl localhost:8080/health      # quick "is it alive?" check
+```
+
+Record now / stop, over the simple web API:
+
+```bash
+# start recording a link
+curl -X POST localhost:8080/record -H 'content-type: application/json' \
+  -d '{"meetUrl":"https://meet.google.com/abc-defg-hij","title":"Algo Lec 3"}'
+
+# see what's recording
+curl localhost:8080/recordings
+
+# stop everything
+curl -X POST localhost:8080/stop -d '{}'
+```
+
+## Connecting a Google Calendar
+
+1. In `.env`, set `SCHEDULE_SOURCE=gcal` and `GCAL_CALENDAR_ID` to the calendar
+   that has your lectures.
+2. Connect a Google account once: `node scripts/google-auth.mjs` and follow the
+   prompt; paste the value it prints into `.env`.
+3. Restart: `docker compose up -d`.
+
+Now any calendar event with a Meet link gets recorded automatically.
+
+## Running it on a server
+
+So it records even when your laptop is off, run it on an always-on machine. A
+free **Oracle Cloud "Always Free"** VM works well. The setup is the same:
+
+```bash
 sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 git
-git clone <your repo> rec-bot && cd rec-bot
-cp .env.example .env && nano .env
-mkdir -p data
-sudo docker compose up -d --build
-# open port 8080 in the instance security list only if you need the API remotely
+git clone git@github.com:SanketRt/rec-bot.git && cd rec-bot
+cp .env.example .env     # edit it
+node scripts/signin.mjs  # do this on a machine with a screen, then copy the data/ folder up
+docker compose up -d --build
 ```
 
-No GPU is needed — software H.264 encodes a single 1080p30 stream on ~2 vCPUs.
-Budget ~1 vCPU and ~1.5 GB RAM per concurrent recording (`MAX_CONCURRENT`).
+> One note: real Google Chrome only exists for regular (Intel/AMD) machines. On
+> ARM servers (like Oracle's free tier) the bot falls back to a built-in browser —
+> see [ARCHITECTURE.md](ARCHITECTURE.md#browsers-versions-and-the-login-profile)
+> for the caveat.
 
-## Operational notes
+## If something goes wrong
 
-- **Transparency:** the bot appears as a visible participant ("ANCC Recording").
-  Announce recording at the start. For your own club's lectures you're on clean
-  ground.
-- **Slides at full res:** spotlight/pin the presentation in Meet so ffmpeg
-  captures slides and code crisply — that's what students rewatch.
-- **Maintenance reality:** Meet changes its UI periodically and can break the
-  join selectors. That's the real ongoing cost of self-hosting. When it happens,
-  add a new candidate in `src/bot/selectors.ts` (check `data/logs/*.png` from the
-  failed join for what changed).
-- **Backup plan:** keep a Recall.ai account with free credits as cheap insurance
-  for high-stakes sessions if the bot ever flakes.
+- **The bot couldn't join / "you can't join this call".** The bot's account must
+  be *different* from whoever is hosting, and someone has to admit it (unless it's
+  an org meeting). Check `data/logs/` — the bot saves a screenshot of the exact
+  screen it got stuck on.
+- **It says it's logged out.** Re-run `node scripts/signin.mjs`. Make sure you set
+  `BROWSER_CHANNEL=chrome`.
+- **Audio is missing or quiet.** Confirm the speaker was actually talking and
+  unmuted. The bot records the call's audio directly, so a silent call records
+  silence.
+- **It joined but recorded the wrong thing.** Ask presenters to "pin" or
+  "spotlight" their screen share so it fills the frame — that's what gets recorded
+  at full quality.
 
-## Project layout
+For anything deeper, the technical guide explains every part:
+**[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
-```
-src/
-  cli.ts                 entry point: record | serve | schedule | all
-  config.ts              env config (zod-validated)
-  session.ts             one recording, end to end (join→record→leave→finalize→upload)
-  manager.ts             concurrency cap + dedup across triggers
-  server.ts              HTTP control API
-  bot/
-    browser.ts           headed Chromium launch (stealth flags, audio routing)
-    join.ts              green-room → admission flow
-    monitor.ts           live participant/share/presence read
-    selectors.ts         resilient Meet selectors (the part that needs upkeep)
-  recorder/
-    ffmpeg.ts            x11grab + pulse capture to .mkv
-    postprocess.ts       loudnorm + silence trim + remux to .mp4, transcription
-  scheduler/
-    scheduler.ts         poll loop
-    fileSource.ts        schedule.json source
-    googleCalendar.ts    Google Calendar source
-  upload/
-    local.ts | drive.ts | youtube.ts
-scripts/google-auth.mjs  one-time OAuth refresh-token helper
-docker/entrypoint.sh     boots Xvfb + PulseAudio, then the app
-```
+## All settings
 
-## Configuration
-
-All options are environment variables documented in `.env.example`. Key ones:
-`MAX_DURATION_MIN`, `EMPTY_GRACE_SEC`, `START_GRACE_SEC`, `VIDEO_CRF`,
-`UPLOAD_TARGET`, `SCHEDULE_SOURCE`, `MAX_CONCURRENT`.
+Every option is documented with its default in **[`.env.example`](.env.example)**.
+The ones you're most likely to touch: `UPLOAD_TARGET`, `SCHEDULE_SOURCE`,
+`MAX_DURATION_MIN`, `BOT_NAME`.

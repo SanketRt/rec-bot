@@ -91,7 +91,14 @@ export class Recorder {
     this.log.info({ rawPath: this.rawPath }, "starting ffmpeg capture");
     this.log.debug({ cmd: `ffmpeg ${args.join(" ")}` }, "ffmpeg args");
 
-    this.logStream = createWriteStream(path.join(this.cfg.logDir!, "ffmpeg.log"), { flags: "a" });
+    const logStream = createWriteStream(path.join(this.cfg.logDir!, "ffmpeg.log"), { flags: "a" });
+    this.logStream = logStream;
+    // A log-file problem (e.g. permissions) must never crash a recording — drop
+    // the side log and keep capturing.
+    logStream.on("error", (err) => {
+      this.log.warn({ err }, "ffmpeg log file unwritable; continuing without it");
+      this.logStream = undefined;
+    });
 
     this.proc = execa("ffmpeg", args, {
       stdin: "pipe",
@@ -99,8 +106,8 @@ export class Recorder {
       stderr: "pipe",
       reject: false,
     });
-    this.proc.stdout?.pipe(this.logStream, { end: false });
-    this.proc.stderr?.pipe(this.logStream, { end: false });
+    this.proc.stdout?.pipe(logStream, { end: false });
+    this.proc.stderr?.pipe(logStream, { end: false });
     // Track completion without relying on the live ChildProcess.exitCode.
     void this.proc.then(() => {
       this.finished = true;

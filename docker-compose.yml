@@ -6,6 +6,14 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Run as your host user so the bind-mounted login profile is readable and
+    # recordings are owned by you (not the image's uid 1001). Defaults to 1000;
+    # override with PUID/PGID in .env if `id -u` differs.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      # The host uid may not own /home/pwuser, so give Chrome/PulseAudio a
+      # writable HOME.
+      - HOME=/tmp
     ports:
       - "8080:8080"
     # Chromium is happier with more shared memory even with --disable-dev-shm-usage.
@@ -14,7 +22,8 @@ services:
       # Recordings, the persistent Chrome login profile, logs, and schedule.json
       # all live here so they survive container restarts.
       - ./data:/data
-      # Mount your rclone config if you upload to Google Drive (UPLOAD_TARGET=drive).
-      # - ./rclone.conf:/home/pwuser/.config/rclone/rclone.conf:ro
+      # Mount your rclone config if you upload to Google Drive (UPLOAD_TARGET=drive),
+      # and set RCLONE_CONFIG=/data/rclone.conf in .env.
+      # - ./rclone.conf:/data/rclone.conf:ro
     # Override to ["serve"] for API-only, or ["schedule"] for scheduler-only.
     command: ["all"]
