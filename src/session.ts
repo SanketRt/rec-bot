@@ -5,6 +5,7 @@ import type { EndReason, RecordingRequest, RecordingResult } from "./types.js";
 import { newSessionId, slugify, fileTimestamp, ensureDir, sleep, normalizeMeetUrl } from "./util.js";
 import { launchBrowser, type BrowserHandle } from "./bot/browser.js";
 import { joinMeeting, leaveMeeting, JoinError } from "./bot/join.js";
+import { dismissPopups, applyLayout } from "./bot/stage.js";
 import { readMeetingState } from "./bot/monitor.js";
 import { isVisible } from "./bot/selectors.js";
 import { Recorder } from "./recorder/ffmpeg.js";
@@ -74,6 +75,16 @@ export class Session {
       throw new SessionError(`join failed: ${(err as Error).message}`, reason);
     }
 
+    // --- Prepare the stage: clear popups, frame just the content ----------
+    if (this.cfg.dismissPopups) await dismissPopups(page, this.log).catch(() => {});
+    await applyLayout(page, this.cfg.layout, this.log).catch(() => {});
+    // Park the cursor over the video area so Meet's controls auto-hide and no
+    // hover tooltips appear. (The cursor itself is never captured — ffmpeg uses
+    // -draw_mouse 0 — but parking it keeps the toolbar from staying on screen.)
+    await page.mouse
+      .move(Math.floor(this.cfg.screenWidth / 2), Math.floor(this.cfg.screenHeight * 0.4))
+      .catch(() => {});
+
     // --- Record -----------------------------------------------------------
     const startedAt = new Date();
     this.recorder = new Recorder(this.cfg, this.log, baseName);
@@ -138,6 +149,7 @@ export class Session {
     const intervalMs = this.cfg.heartbeatIntervalSec * 1000;
     let emptySince: number | undefined;
     let missingCount = 0;
+    let ticks = 0;
 
     while (true) {
       await sleep(intervalMs);
@@ -145,6 +157,11 @@ export class Session {
 
       const elapsedSec = (Date.now() - startedAt.getTime()) / 1000;
       if (elapsedSec >= maxDurationMin * 60) return "max-duration";
+
+      // Periodically clear popups that appear mid-call (every ~minute).
+      if (this.cfg.dismissPopups && ++ticks % 6 === 0 && !page.isClosed()) {
+        await dismissPopups(page, this.log).catch(() => {});
+      }
 
       if (page.isClosed()) {
         this.log.warn("browser page closed unexpectedly");

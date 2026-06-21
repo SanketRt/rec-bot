@@ -43,6 +43,13 @@ const ConfigSchema = z.object({
   chromeUserDataDir: str("/data/chrome-profile"),
   chromeExecutable: str(), // optional override; defaults to Playwright's Chromium
   browserChannel: str(), // e.g. "chrome" to use real Google Chrome (dodges Meet's bot block)
+
+  // --- Framing -------------------------------------------------------------
+  layout: z
+    .enum(["spotlight", "auto", "tiled", "sidebar"])
+    .or(z.undefined())
+    .transform((v) => v ?? "spotlight"), // spotlight = only the active speaker/share fills the frame
+  dismissPopups: bool(true), // auto-close in-call popups (Gemini notes, tips, etc.)
   googleEmail: str(),
   googlePassword: str(),
 
@@ -118,6 +125,8 @@ function loadEnv(): Record<string, string | undefined> {
     chromeUserDataDir: process.env.CHROME_USER_DATA_DIR,
     chromeExecutable: process.env.CHROME_EXECUTABLE,
     browserChannel: process.env.BROWSER_CHANNEL,
+    layout: process.env.LAYOUT,
+    dismissPopups: process.env.DISMISS_POPUPS,
     googleEmail: process.env.GOOGLE_EMAIL,
     googlePassword: process.env.GOOGLE_PASSWORD,
     maxDurationMin: process.env.MAX_DURATION_MIN,

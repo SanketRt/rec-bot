@@ -29,11 +29,16 @@ export const candidates: Record<string, Candidate[]> = {
   ],
 
   // The primary join button. "Join now" = admitted directly; "Ask to join" =
-  // lobby/waiting room.
+  // lobby/waiting room. "Switch here" appears when the bot's OWN account is
+  // already in the call (e.g. a ghost from a crashed prior session) — clicking
+  // it reclaims that session, which is exactly what we want for a dedicated bot.
   joinButton: [
-    (p) => p.getByRole("button", { name: /^(join now|ask to join)$/i }),
-    (p) => p.getByRole("button", { name: /join now|ask to join|join the call/i }),
-    (p) => p.locator('button:has-text("Join now"), button:has-text("Ask to join")').first(),
+    (p) => p.getByRole("button", { name: /^(join now|ask to join|switch here)$/i }),
+    (p) => p.getByRole("button", { name: /join now|ask to join|join the call|switch here/i }),
+    (p) =>
+      p
+        .locator('button:has-text("Join now"), button:has-text("Ask to join"), button:has-text("Switch here")')
+        .first(),
   ],
 
   // Microphone toggle on the green room and in-call. Carries data-is-muted.
@@ -61,6 +66,30 @@ export const candidates: Record<string, Candidate[]> = {
   peopleButton: [
     (p) => p.getByRole("button", { name: /show everyone|people|participants/i }),
     (p) => p.locator('[aria-label*="people" i][role="button"], [aria-label*="everyone" i][role="button"]').first(),
+  ],
+
+  // In-call "More options" (three-dot) button on the bottom toolbar.
+  moreOptions: [
+    (p) => p.getByRole("button", { name: /^more options$/i }),
+    (p) => p.locator('button[aria-label="More options"]').last(),
+    (p) => p.locator('[aria-label*="more option" i][role="button"]').last(),
+  ],
+
+  // "Change layout" entry inside the More-options menu.
+  changeLayout: [
+    (p) => p.getByRole("menuitem", { name: /change layout/i }),
+    (p) => p.getByText(/^change layout$/i),
+  ],
+
+  // Generic dialog close button (e.g. to close the layout dialog).
+  closeDialog: [
+    (p) => p.getByRole("button", { name: /^close$/i }),
+    (p) => p.locator('[aria-label="Close"][role="button"]').last(),
+  ],
+
+  // Dismiss-style buttons on transient in-call popups (Gemini notes, tips…).
+  popupDismiss: [
+    (p) => p.getByRole("button", { name: /no thanks|not now|got it|dismiss|maybe later|skip/i }),
   ],
 
   // Text shown after being removed / when the call ends.

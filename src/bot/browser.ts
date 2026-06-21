@@ -1,5 +1,5 @@
 import path from "node:path";
-import { rm } from "node:fs/promises";
+import { rm, readFile, writeFile } from "node:fs/promises";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import type { Config } from "../config.js";
 import type { Logger } from "../logger.js";
@@ -16,6 +16,26 @@ async function clearStaleProfileLocks(userDataDir: string, log: Logger): Promise
     await rm(path.join(userDataDir, f), { force: true }).catch((err) =>
       log.debug({ err, f }, "could not remove stale lock (continuing)"),
     );
+  }
+}
+
+/**
+ * Mark the profile as having exited cleanly, so Chrome doesn't show the
+ * "Restore pages? Chrome didn't shut down correctly" bubble (that bubble is
+ * browser chrome, not page content, so it can't be clicked away — it has to be
+ * prevented here). Needed because hard kills leave exit_type = "Crashed".
+ */
+async function markProfileCleanExit(userDataDir: string, log: Logger): Promise<void> {
+  const prefsPath = path.join(userDataDir, "Default", "Preferences");
+  try {
+    const prefs = JSON.parse(await readFile(prefsPath, "utf8"));
+    prefs.profile ??= {};
+    prefs.profile.exit_type = "Normal";
+    prefs.profile.exited_cleanly = true;
+    await writeFile(prefsPath, JSON.stringify(prefs));
+    log.debug("reset profile exit_type to Normal");
+  } catch (err) {
+    log.debug({ err }, "could not sanitize profile Preferences (continuing)");
   }
 }
 
@@ -39,6 +59,7 @@ export interface BrowserHandle {
 export async function launchBrowser(cfg: Config, log: Logger): Promise<BrowserHandle> {
   await ensureDir(cfg.chromeUserDataDir!);
   await clearStaleProfileLocks(cfg.chromeUserDataDir!, log);
+  await markProfileCleanExit(cfg.chromeUserDataDir!, log);
 
   const { screenWidth: w, screenHeight: h } = cfg;
 
@@ -53,6 +74,9 @@ export async function launchBrowser(cfg: Config, log: Logger): Promise<BrowserHa
     "--autoplay-policy=no-user-gesture-required", // let remote audio play immediately
     "--disable-features=IsolateOrigins,site-per-process,Translate",
     "--disable-infobars",
+    "--test-type", // suppress the "unsupported flag --no-sandbox" warning bar
+    "--hide-crash-restore-bubble", // no "Restore pages?" bubble blocking the frame
+    "--disable-session-crashed-bubble",
     "--disable-notifications",
     "--no-first-run",
     "--no-default-browser-check",
@@ -75,7 +99,9 @@ export async function launchBrowser(cfg: Config, log: Logger): Promise<BrowserHa
     // because remote audio is played to the output sink we record — output
     // playback needs no permission.
     permissions: [],
-    ignoreDefaultArgs: ["--mute-audio"], // we MUST keep audio un-muted to record it
+    // Keep audio un-muted (we record it); drop the automation switch so the
+    // "Chrome is being controlled by automated test software" banner is gone.
+    ignoreDefaultArgs: ["--mute-audio", "--enable-automation"],
   });
 
   // Belt-and-suspenders: explicitly deny media capture for meet.google.com.
