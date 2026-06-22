@@ -16,6 +16,24 @@ services:
       - HOME=/tmp
     ports:
       - "8080:8080"
+    # Use reliable public resolvers instead of inheriting the host's single
+    # (often campus) DNS server. Without this, a flaky upstream resolver leaves
+    # the container unable to resolve meet.google.com — the server stays up but
+    # every recording fails at join with a page.goto timeout.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    # Surface network/DNS loss in `docker ps` (status: unhealthy) instead of
+    # silently failing recordings. Checks both the local server and that Meet
+    # still resolves. Pair with an autoheal sidecar if you want auto-restart.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "curl -fsS --max-time 5 http://localhost:8080/health >/dev/null && getent hosts meet.google.com >/dev/null"
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     # Chromium is happier with more shared memory even with --disable-dev-shm-usage.
     shm_size: "1gb"
     volumes:

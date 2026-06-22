@@ -12,6 +12,12 @@ export interface RecordingRequest {
   maxDurationMin?: number;
   /** Display name the bot shows in the participant list. */
   botName?: string;
+  /** Meet layout to apply for this recording (overrides config default). */
+  layout?: "spotlight" | "auto" | "tiled" | "sidebar";
+  /** Hide the bot's own self-view tile (best-effort; overrides config default). */
+  hideSelfView?: boolean;
+  /** Auto-dismiss in-call popups (overrides config default). */
+  dismissPopups?: boolean;
 }
 
 export interface RecordingResult {

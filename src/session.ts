@@ -5,7 +5,7 @@ import type { EndReason, RecordingRequest, RecordingResult } from "./types.js";
 import { newSessionId, slugify, fileTimestamp, ensureDir, sleep, normalizeMeetUrl } from "./util.js";
 import { launchBrowser, type BrowserHandle } from "./bot/browser.js";
 import { joinMeeting, leaveMeeting, JoinError } from "./bot/join.js";
-import { dismissPopups, applyLayout } from "./bot/stage.js";
+import { dismissPopups, applyLayout, hideSelfView } from "./bot/stage.js";
 import { readMeetingState } from "./bot/monitor.js";
 import { isVisible } from "./bot/selectors.js";
 import { Recorder } from "./recorder/ffmpeg.js";
@@ -34,6 +34,15 @@ export class Session {
   private stopReason: EndReason | undefined;
   private browser?: BrowserHandle;
   private recorder?: Recorder;
+
+  // Framing state. Meet hides the layout control and disables "Minimize" on the
+  // self-tile while the bot is alone, so these may not succeed on the first try
+  // at join time — the watch loop retries them once participants are present.
+  private wantLayout = "auto";
+  private wantHideSelf = false;
+  private layoutApplied = false;
+  private selfViewHidden = false;
+  private stagingAttempts = 0;
 
   constructor(
     private readonly request: RecordingRequest,
@@ -76,14 +85,16 @@ export class Session {
     }
 
     // --- Prepare the stage: clear popups, frame just the content ----------
-    if (this.cfg.dismissPopups) await dismissPopups(page, this.log).catch(() => {});
-    await applyLayout(page, this.cfg.layout, this.log).catch(() => {});
-    // Park the cursor over the video area so Meet's controls auto-hide and no
-    // hover tooltips appear. (The cursor itself is never captured — ffmpeg uses
-    // -draw_mouse 0 — but parking it keeps the toolbar from staying on screen.)
-    await page.mouse
-      .move(Math.floor(this.cfg.screenWidth / 2), Math.floor(this.cfg.screenHeight * 0.4))
-      .catch(() => {});
+    // Let the call UI finish rendering after admission before driving its menus
+    // (otherwise the layout menu is incomplete and tile controls aren't ready).
+    await sleep(3500);
+    const wantDismiss = this.request.dismissPopups ?? this.cfg.dismissPopups;
+    this.wantLayout = this.request.layout ?? this.cfg.layout;
+    this.wantHideSelf = this.request.hideSelfView ?? this.cfg.hideSelfView;
+    if (wantDismiss) await dismissPopups(page, this.log).catch(() => {});
+    // First framing attempt. If the bot is still alone these are no-ops that the
+    // watch loop will retry once a participant joins (Meet gates both controls).
+    await this.applyFraming(page);
 
     // --- Record -----------------------------------------------------------
     const startedAt = new Date();
@@ -143,6 +154,32 @@ export class Session {
     return result;
   }
 
+  /**
+   * Apply the requested layout + hide-self-view, then park the cursor so Meet's
+   * toolbar auto-hides. Both Meet controls are gated until others join, so this
+   * is idempotent and re-runnable: it only attempts the steps not yet done.
+   */
+  private async applyFraming(page: import("playwright").Page): Promise<void> {
+    this.stagingAttempts++;
+    if (!this.layoutApplied) {
+      this.layoutApplied = await applyLayout(page, this.wantLayout, this.log).catch(() => false);
+    }
+    if (this.wantHideSelf && !this.selfViewHidden) {
+      this.selfViewHidden = await hideSelfView(page, this.log).catch(() => false);
+    }
+    // Park the cursor over the video area so Meet's controls auto-hide and no
+    // hover tooltips appear. (The cursor itself is never captured — ffmpeg uses
+    // -draw_mouse 0 — but parking it keeps the toolbar from staying on screen.)
+    await page.mouse
+      .move(Math.floor(this.cfg.screenWidth / 2), Math.floor(this.cfg.screenHeight * 0.4))
+      .catch(() => {});
+  }
+
+  /** True once every requested framing step has been applied (or capped out). */
+  private get framingDone(): boolean {
+    return this.layoutApplied && (!this.wantHideSelf || this.selfViewHidden);
+  }
+
   /** Heartbeat loop: returns the reason the session should end. */
   private async watchLoop(startedAt: Date, maxDurationMin: number): Promise<EndReason> {
     const page = this.browser!.page;
@@ -169,6 +206,14 @@ export class Session {
       }
 
       const state = await readMeetingState(page, this.log);
+
+      // Retry framing once others are present: Meet hides the layout control and
+      // disables self-tile "Minimize" while the bot is alone. Capped so we never
+      // flicker menus over the recording indefinitely if a control is missing.
+      if (!this.framingDone && state.inMeeting && state.participantCount > 1 && this.stagingAttempts < 8) {
+        await this.applyFraming(page);
+        if (this.framingDone) this.log.info("framing applied (layout/self-view)");
+      }
 
       // Detect removal / disconnect (allow a few transient misses).
       if (!state.inMeeting) {

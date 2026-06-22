@@ -50,6 +50,7 @@ const ConfigSchema = z.object({
     .or(z.undefined())
     .transform((v) => v ?? "spotlight"), // spotlight = only the active speaker/share fills the frame
   dismissPopups: bool(true), // auto-close in-call popups (Gemini notes, tips, etc.)
+  hideSelfView: bool(false), // hide the bot's own self-view tile (best-effort)
   googleEmail: str(),
   googlePassword: str(),
 
@@ -127,6 +128,7 @@ function loadEnv(): Record<string, string | undefined> {
     browserChannel: process.env.BROWSER_CHANNEL,
     layout: process.env.LAYOUT,
     dismissPopups: process.env.DISMISS_POPUPS,
+    hideSelfView: process.env.HIDE_SELF_VIEW,
     googleEmail: process.env.GOOGLE_EMAIL,
     googlePassword: process.env.GOOGLE_PASSWORD,
     maxDurationMin: process.env.MAX_DURATION_MIN,
